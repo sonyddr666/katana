@@ -3,9 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CODEX-JSON-RPC Chat</title>
+    <title>CODEX-JSON-RPC Hub</title>
     <link rel="stylesheet" href="assets/main.css" />
-    <!-- Markdown parser and syntax highlight from CDN -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link
       rel="stylesheet"
@@ -15,35 +14,169 @@
   </head>
   <body>
     <div id="app">
-      <header class="header">
-        <h1>CODEX-JSON-RPC</h1>
-        <div class="controls">
-          <select id="model-select"></select>
-          <label class="toggle">
-            <input type="checkbox" id="tools-enabled" checked />
-            <span>Tools Enabled</span>
-          </label>
-          <button id="clear-chat" title="Clear chat">🗑️</button>
+      <header class="topbar">
+        <div class="brand">Fluxo Codex</div>
+        <nav class="tabs">
+          <button class="tab active" data-tab="tester">💬 Tester</button>
+          <button class="tab" data-tab="interactive">🤖 Interactive</button>
+          <button class="tab" data-tab="history">📚 Histórico</button>
+          <button class="tab" data-tab="auth">🔐 Auth Pool</button>
+        </nav>
+        <div class="session-badge">
+          <span class="dot" id="session-dot"></span>
+          <span id="session-label">sem sessão</span>
         </div>
       </header>
 
-      <main id="chat-container"></main>
+      <section id="view-chat" class="view active">
+        <aside class="sidebar">
+          <div class="section">
+            <h3>Conexão</h3>
+            <label>Host</label>
+            <input id="base-url" class="mono" placeholder="auto" />
 
-      <div class="input-area">
-        <textarea
-          id="prompt"
-          placeholder="Digite sua mensagem... (Shift+Enter para nova linha)"
-          rows="3"
-        ></textarea>
-        <button id="send">
-          <span>Enviar</span>
-        </button>
-      </div>
+            <label>Endpoint</label>
+            <select id="endpoint" class="mono">
+              <option value="/v1/chat/completions">/v1/chat/completions</option>
+              <option value="/v1/responses">/v1/responses</option>
+            </select>
 
-      <div class="status-bar">
-        <span id="status">Pronto</span>
-        <span id="session-id"></span>
-      </div>
+            <label>Auth Slot</label>
+            <select id="auth-slot" class="mono">
+              <option value="">Auto</option>
+            </select>
+          </div>
+
+          <div class="section">
+            <h3>Parâmetros</h3>
+            <label>Modelo</label>
+            <div class="row gap">
+              <select id="model-select" class="mono flex-1"></select>
+              <button id="reload-models" class="btn icon" title="Recarregar modelos">↻</button>
+            </div>
+
+            <div class="row gap split">
+              <div>
+                <label>Temperatura</label>
+                <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" />
+              </div>
+              <div>
+                <label>Max Tokens</label>
+                <input id="max-tokens" type="number" min="1" step="1" value="1200" />
+              </div>
+            </div>
+
+            <label>Reasoning</label>
+            <select id="reasoning-effort" class="mono">
+              <option value="">Auto</option>
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+
+            <label>System Prompt</label>
+            <textarea id="system-prompt" rows="5" placeholder="You are a helpful assistant."></textarea>
+          </div>
+
+          <div class="section">
+            <h3>Retomada nativa</h3>
+            <div class="store-card">
+              <div>
+                <strong id="store-status">⏳ verificando...</strong>
+                <p id="store-message">O Codex usa <code>store: false</code>; este controle define se o hub tentará retomar via <code>previous_response_id</code>.</p>
+              </div>
+              <div class="row gap">
+                <button id="store-enable" class="btn success">Ativar retomada</button>
+                <button id="store-disable" class="btn danger">Desativar retomada</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="section grow">
+            <button id="clear-chat" class="btn block danger">🗑️ Limpar conversa atual</button>
+            <div class="hint">Modo selecionado: <span id="mode-label">tester</span></div>
+          </div>
+        </aside>
+
+        <main class="chat-layout">
+          <div class="chat-panel">
+            <div id="chat-title" class="chat-title">Tester</div>
+            <div id="chat-container" class="chat-container"></div>
+            <div class="composer">
+              <textarea id="prompt" rows="3" placeholder="Digite sua mensagem..."></textarea>
+              <div class="row gap end">
+                <button id="send" class="btn primary">Enviar</button>
+              </div>
+            </div>
+          </div>
+          <aside class="raw-panel">
+            <div class="raw-header">Logs / Stream</div>
+            <div id="raw-output" class="raw-output"></div>
+            <div class="status-bar">
+              <span id="status">Pronto</span>
+              <span id="session-id"></span>
+            </div>
+          </aside>
+        </main>
+      </section>
+
+      <section id="view-history" class="view">
+        <aside class="history-list-panel">
+          <div class="section compact">
+            <h3>Histórico</h3>
+            <div class="row gap">
+              <input id="history-search" placeholder="Buscar..." />
+              <button id="reload-history" class="btn icon">↻</button>
+            </div>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </aside>
+        <main class="history-detail-panel">
+          <div id="history-meta" class="history-meta empty">Selecione uma conversa.</div>
+          <div id="history-messages" class="history-messages"></div>
+          <div class="row gap history-actions">
+            <button id="history-resume" class="btn primary" disabled>Retomar</button>
+            <button id="history-export" class="btn" disabled>Exportar JSON</button>
+            <button id="history-delete" class="btn danger" disabled>Apagar</button>
+          </div>
+        </main>
+      </section>
+
+      <section id="view-auth" class="view auth-view">
+        <div class="auth-columns">
+          <aside class="auth-list-panel">
+            <div class="section compact">
+              <h3>Auth Pool</h3>
+              <label>ADMIN_PIN</label>
+              <div class="row gap">
+                <input id="admin-pin" type="password" class="mono" placeholder="opcional" />
+                <button id="reload-auth" class="btn icon">↻</button>
+              </div>
+            </div>
+            <div id="auth-slots" class="auth-slots"></div>
+          </aside>
+          <main class="auth-editor-panel">
+            <div class="section compact">
+              <h3 id="auth-slot-title">Selecione um slot</h3>
+              <div class="row gap split align-center">
+                <label class="checkbox-row"><input id="auth-enabled" type="checkbox" /> Slot ativo</label>
+                <button id="auth-activate" class="btn">Definir como atual</button>
+              </div>
+            </div>
+            <div class="section grow compact">
+              <label>JSON do auth</label>
+              <textarea id="auth-json" class="mono grow-textarea" placeholder='{"access":"...","refresh":"...","expires":0,"accountId":"..."}'></textarea>
+            </div>
+            <div class="row gap auth-actions">
+              <button id="auth-save" class="btn primary">Salvar</button>
+              <button id="auth-test" class="btn success">Testar</button>
+              <button id="auth-delete" class="btn danger">Apagar</button>
+            </div>
+            <pre id="auth-result" class="mono auth-result">Carregando auth pool...</pre>
+          </main>
+        </div>
+      </section>
     </div>
 
     <script type="module" src="assets/main.js"></script>

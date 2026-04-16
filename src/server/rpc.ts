@@ -1,8 +1,9 @@
+import { CODEX_MODELS } from "./codex/client";
 import { config } from "./config/env";
-import { toolRegistry } from "./tools/registry";
+import { handleHistoryClear, handleHistoryGet } from "./history";
+import { createSession, getSession, type Message, updateSession } from "./history/store";
 import { runToolLoop } from "./tools-loop/engine";
-import { getSession, createSession, updateSession } from "./history/store";
-import { handleHistoryGet, handleHistoryClear } from "./history";
+import { getToolByName, listTools } from "./tools/registry";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -22,32 +23,42 @@ export interface JsonRpcResponse {
   };
 }
 
+type ChatParams = {
+  requestId?: string | number | null;
+  model?: string;
+  messages?: Array<{ role: string; content: string | null }>;
+  tools_enabled?: string[] | boolean;
+  disabled_tools?: string[];
+  system?: string;
+  sessionId?: string;
+};
+
 export async function rpcHandler(
-  requestBody: JsonRpcRequest | { model: string; messages: any[]; tools_enabled?: string[]; system?: string }
+  requestBody: JsonRpcRequest | (ChatParams & { model: string; messages: any[] })
 ): Promise<JsonRpcResponse> {
-  // Handle OpenAI-compatible format (not strict JSON-RPC)
-  if ("model" in requestBody) {
-    return handleChatMessage(requestBody);
+  if (!("jsonrpc" in requestBody) && "model" in requestBody) {
+    return handleChatMessage(requestBody, null);
   }
 
-  // Standard JSON-RPC 2.0
   const { id, method, params = {} } = requestBody;
 
   try {
     switch (method) {
       case "chat": {
-        return handleChatMessage(params);
+        return handleChatMessage(params as ChatParams, id);
       }
 
       case "models": {
+        const uniqueModels = Array.from(new Set([...(config.availableModels || []), ...CODEX_MODELS]));
         return {
           jsonrpc: "2.0",
           id,
           result: {
-            models: [
-              { id: "codex-mini", object: "model", owned_by: "openai" },
-              { id: "codex", object: "model", owned_by: "openai" },
-            ],
+            models: uniqueModels.map((modelId) => ({
+              id: modelId,
+              object: "model",
+              owned_by: "chatgpt.com",
+            })),
           },
         };
       }
@@ -57,27 +68,22 @@ export async function rpcHandler(
           jsonrpc: "2.0",
           id,
           result: {
-            tools: toolRegistry.map((t) => ({
-              name: t.name,
-              description: t.description,
-              scope: t.scope,
-              schema: t.schema,
-            })),
+            tools: listTools(),
           },
         };
       }
 
       case "tools.run": {
         const { tool, args } = params;
-        if (!tool || !args) {
+        if (!tool) {
           return {
             jsonrpc: "2.0",
             id,
-            error: { code: -32602, message: "Invalid params: tool and args required" },
+            error: { code: -32602, message: "Invalid params: tool is required" },
           };
         }
 
-        const toolDef = toolRegistry.find((t) => t.name === tool);
+        const toolDef = getToolByName(tool);
         if (!toolDef) {
           return {
             jsonrpc: "2.0",
@@ -87,7 +93,7 @@ export async function rpcHandler(
         }
 
         try {
-          const result = await toolDef.handler(args);
+          const result = await toolDef.handler(args || {});
           return {
             jsonrpc: "2.0",
             id,
@@ -107,7 +113,7 @@ export async function rpcHandler(
         return {
           jsonrpc: "2.0",
           id,
-          result: historyResult.result,
+          result: historyResult.result || null,
         };
       }
 
@@ -116,7 +122,7 @@ export async function rpcHandler(
         return {
           jsonrpc: "2.0",
           id,
-          result: clearResult.result,
+          result: clearResult.result || null,
         };
       }
 
@@ -138,68 +144,95 @@ export async function rpcHandler(
   }
 }
 
-async function handleChatMessage(params: {
-  model?: string;
-  messages?: Array<{ role: string; content: string }>;
-  tools_enabled?: string[];
-  system?: string;
-  sessionId?: string;
-}): Promise<JsonRpcResponse> {
-  const model = params.model || "codex-mini";
-  const userMessages = params.messages || [];
-  const toolsEnabled = params.tools_enabled || [];
+async function handleChatMessage(params: ChatParams, requestId?: string | number | null): Promise<JsonRpcResponse> {
+  const effectiveRequestId = requestId ?? params.requestId ?? null;
+  const model = params.model || config.defaultCodexModel;
+  const incomingMessages = (params.messages || []).map((message) => ({
+    role: message.role,
+    content: message.content ?? "",
+  })) as Message[];
   const systemPrompt = params.system || "";
-  const sessionId = params.sessionId || "default";
+  const sessionId = params.sessionId || `session-${Date.now().toString(36)}`;
+  const disabledTools = params.disabled_tools || [];
 
-  // Get or create session
-  let session = getSession(sessionId);
+  let session = await getSession(sessionId);
   if (!session) {
-    session = createSession(sessionId);
+    session = await createSession(sessionId);
   }
 
-  // Build message history
-  const allMessages = [
-    ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
-    ...session.messages,
-    ...userMessages,
-  ];
+  const persistedMessages = session.messages.filter((message) => message.role !== "system");
+  const conversation: Message[] = [...persistedMessages, ...incomingMessages];
 
-  // Run tool loop
-  const toolResult = await runToolLoop(allMessages, toolsEnabled, [], config.maxToolLoops);
+  const toolResult = await runToolLoop({
+    model,
+    messages: conversation,
+    toolsEnabled: params.tools_enabled,
+    disabledTools,
+    sessionId,
+    maxLoops: config.maxToolLoops,
+    systemPrompt,
+  });
 
-  // Update session with new messages
-  if (toolResult.ok) {
-    updateSession(sessionId, toolResult.data.messages);
-  }
+  await updateSession(sessionId, toolResult.data.messages);
 
-  // Return response with tool execution summary
+  const finalAssistantMessage = toolResult.data.finalMessage || toolResult.data.messages.slice().reverse().find((message: Message) => message.role === "assistant");
+  const promptTokens = Math.max(1, Math.ceil(JSON.stringify(conversation).length / 4));
+  const completionTokens = Math.max(1, Math.ceil(JSON.stringify(finalAssistantMessage || {}).length / 4));
+
   return {
     jsonrpc: "2.0",
-    id: Date.now(),
+    id: effectiveRequestId,
     result: {
       model,
+      created: Math.floor(Date.now() / 1000),
       choices: [
         {
           index: 0,
           message: {
-            role: "assistant",
-            content: toolResult.ok
-              ? `Tool loop completed. Attempts: ${toolResult.attempts.length}. ${toolResult.suggested_next || ""}`
-              : `Error: ${JSON.stringify(toolResult)}`,
+            role: finalAssistantMessage?.role || "assistant",
+            content: finalAssistantMessage?.content || "",
           },
           finish_reason: toolResult.ok ? "stop" : "error",
         },
       ],
       usage: {
-        prompt_tokens: allMessages.length,
-        completion_tokens: 1,
-        total_tokens: allMessages.length + 1,
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
       },
       tool_execution: {
         attempts: toolResult.attempts,
         suggested_next: toolResult.suggested_next,
+        provider: toolResult.provider,
+        loops: toolResult.data.loops,
+        tools_enabled: params.tools_enabled,
+        disabled_tools: disabledTools,
       },
       sessionId,
     },
+  };
+}
+
+export function toOpenAiCompatChatCompletion(result: any): Record<string, any> {
+  return {
+    id: `chatcmpl-${Date.now().toString(36)}`,
+    object: "chat.completion",
+    created: result.created || Math.floor(Date.now() / 1000),
+    model: result.model,
+    choices: result.choices || [],
+    usage: result.usage || {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+    },
+    sessionId: result.sessionId,
+    tool_execution: result.tool_execution,
+  };
+}
+
+export function toOpenAiCompatModels(result: any): Record<string, any> {
+  return {
+    object: "list",
+    data: result?.models || [],
   };
 }

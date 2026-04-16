@@ -8,7 +8,6 @@ import { runPython } from "./run_python";
 import { evalMath } from "./eval_math";
 
 export const toolRegistry: ToolSchema[] = [
-  // Web & External Data
   {
     name: "search_web",
     description: "DuckDuckGo scraper, retorna top 5 snippets",
@@ -17,6 +16,7 @@ export const toolRegistry: ToolSchema[] = [
       type: "object",
       properties: { query: { type: "string", description: "Search query" } },
       required: ["query"],
+      additionalProperties: false,
     },
     handler: webTools.searchWeb,
   },
@@ -31,6 +31,7 @@ export const toolRegistry: ToolSchema[] = [
         selector: { type: "string", description: "CSS selector (optional)" },
       },
       required: ["url"],
+      additionalProperties: false,
     },
     handler: webTools.fetchUrl,
   },
@@ -45,11 +46,10 @@ export const toolRegistry: ToolSchema[] = [
         days: { type: "number", description: "Days back to search" },
       },
       required: ["query"],
+      additionalProperties: false,
     },
     handler: webTools.searchNews,
   },
-
-   // Workspace
   {
     name: "read_file",
     description: "Lê arquivo do diretório de workspace",
@@ -60,6 +60,7 @@ export const toolRegistry: ToolSchema[] = [
         filepath: { type: "string", description: "Relative path within workspace" },
       },
       required: ["filepath"],
+      additionalProperties: false,
     },
     handler: workspaceTools.readFile,
   },
@@ -74,6 +75,7 @@ export const toolRegistry: ToolSchema[] = [
         content: { type: "string", description: "File content" },
       },
       required: ["filepath", "content"],
+      additionalProperties: false,
     },
     handler: workspaceTools.writeFile,
   },
@@ -88,6 +90,7 @@ export const toolRegistry: ToolSchema[] = [
         content: { type: "string", description: "Content to append" },
       },
       required: ["filepath", "content"],
+      additionalProperties: false,
     },
     handler: workspaceTools.appendFile,
   },
@@ -101,6 +104,7 @@ export const toolRegistry: ToolSchema[] = [
         dir: { type: "string", description: "Directory to list (optional)" },
       },
       required: [],
+      additionalProperties: false,
     },
     handler: workspaceTools.listFiles,
   },
@@ -114,11 +118,10 @@ export const toolRegistry: ToolSchema[] = [
         filepath: { type: "string", description: "Relative path within workspace" },
       },
       required: ["filepath"],
+      additionalProperties: false,
     },
     handler: workspaceTools.deleteFile,
   },
-
-   // Code & Execution
   {
     name: "run_js",
     description: "Executa JavaScript via vm.runInNewContext (sandbox)",
@@ -129,6 +132,7 @@ export const toolRegistry: ToolSchema[] = [
         code: { type: "string", description: "JavaScript code to execute" },
       },
       required: ["code"],
+      additionalProperties: false,
     },
     handler: runJs,
   },
@@ -142,6 +146,7 @@ export const toolRegistry: ToolSchema[] = [
         code: { type: "string", description: "Python code to execute" },
       },
       required: ["code"],
+      additionalProperties: false,
     },
     handler: runPython,
   },
@@ -155,11 +160,10 @@ export const toolRegistry: ToolSchema[] = [
         expression: { type: "string", description: "Math expression" },
       },
       required: ["expression"],
+      additionalProperties: false,
     },
     handler: evalMath,
   },
-
-  // RAG & Memory
   {
     name: "search_rag",
     description: "Busca semântica no Qdrant (stub pronto, plugável)",
@@ -169,38 +173,44 @@ export const toolRegistry: ToolSchema[] = [
       properties: {
         query: { type: "string", description: "Search query" },
         top_k: { type: "number", description: "Number of results" },
+        filters: {
+          type: "object",
+          description: "Optional exact-match filters",
+          additionalProperties: true,
+        },
       },
-    required: ["query"],
-  },
-  handler: ragTools.searchRag,
-},
-{
-  name: "ingest_file",
-  description: "Indexa arquivo no Qdrant com embeddings",
-  scope: "rag",
-  schema: {
-    type: "object",
-    properties: {
-      filepath: { type: "string", description: "File to ingest" },
-      userId: { type: "string", description: "User ID for namespacing" },
+      required: ["query"],
+      additionalProperties: false,
     },
-    required: ["filepath", "userId"],
+    handler: ragTools.searchRag,
   },
-  handler: ragTools.ingestFile,
-},
-{
-  name: "rag_status",
-  description: "Retorna status da coleção Qdrant (points, status)",
-  scope: "rag",
-  schema: {
-    type: "object",
-    properties: {},
-    required: [],
+  {
+    name: "ingest_file",
+    description: "Indexa arquivo no Qdrant com embeddings",
+    scope: "rag",
+    schema: {
+      type: "object",
+      properties: {
+        filepath: { type: "string", description: "File to ingest" },
+        userId: { type: "string", description: "User ID for namespacing" },
+      },
+      required: ["filepath", "userId"],
+      additionalProperties: false,
+    },
+    handler: ragTools.ingestFile,
   },
-  handler: ragTools.ragStatus,
-},
-
-  // System & Utilities
+  {
+    name: "rag_status",
+    description: "Retorna status da coleção Qdrant (points, status)",
+    scope: "rag",
+    schema: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    handler: ragTools.ragStatus,
+  },
   {
     name: "get_datetime",
     description: "Retorna data/hora atual formatada",
@@ -211,6 +221,7 @@ export const toolRegistry: ToolSchema[] = [
         timezone: { type: "string", description: "Timezone (e.g., 'America/Sao_Paulo')" },
       },
       required: [],
+      additionalProperties: false,
     },
     handler: systemTools.getDatetime,
   },
@@ -222,6 +233,7 @@ export const toolRegistry: ToolSchema[] = [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
     handler: systemTools.uuid,
   },
@@ -235,6 +247,7 @@ export const toolRegistry: ToolSchema[] = [
         text: { type: "string", description: "Text to encode" },
       },
       required: ["text"],
+      additionalProperties: false,
     },
     handler: systemTools.base64Encode,
   },
@@ -248,6 +261,7 @@ export const toolRegistry: ToolSchema[] = [
         text: { type: "string", description: "Base64 text to decode" },
       },
       required: ["text"],
+      additionalProperties: false,
     },
     handler: systemTools.base64Decode,
   },
@@ -261,6 +275,7 @@ export const toolRegistry: ToolSchema[] = [
         raw: { type: "string", description: "Raw JSON string" },
       },
       required: ["raw"],
+      additionalProperties: false,
     },
     handler: systemTools.jsonFormat,
   },

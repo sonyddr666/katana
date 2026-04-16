@@ -1,8 +1,12 @@
 import express from "express";
 import http from "http";
+import path from "path";
+
 import cors from "cors";
 import bodyParser from "body-parser";
+
 import { config } from "./config/env";
+import { setupHubApiRoutes } from "./hub-api";
 import { rpcHandler } from "./rpc";
 import { sseRouter } from "./sse";
 import { authMiddleware } from "./middlewares/auth";
@@ -11,6 +15,7 @@ import { setupToolLoopRoutes } from "./tools-loop/routes";
 
 const app = express();
 const server = http.createServer(app);
+const webRoot = path.resolve(__dirname, "..", "..", "src", "web");
 
 // Trust proxy for correct IP detection behind reverse proxy
 app.set("trust proxy", 1);
@@ -23,7 +28,7 @@ app.use(loggerMiddleware);
 app.use(authMiddleware);
 
 // Static files (Chat UI)
-app.use(express.static("src/web"));
+app.use(express.static(webRoot));
 
 // JSON-RPC 2.0 endpoint
 app.post("/rpc", async (req, res) => {
@@ -44,50 +49,18 @@ app.post("/rpc", async (req, res) => {
   }
 });
 
-// OpenAI-compatible endpoints
-app.post("/v1/chat/completions", async (req, res) => {
-  try {
-    const result = await rpcHandler({
-      jsonrpc: "2.0",
-      id: req.body.id || Date.now(),
-      method: "chat",
-      params: req.body,
-    });
-    res.json(result);
-  } catch (error) {
-    console.error("OpenAI compatible error:", error);
-    res.status(500).json({
-      error: {
-        code: "server_error",
-        message: "Internal server error",
-        data: String(error),
-      },
-    });
-  }
-});
-
-app.get("/v1/models", async (req, res) => {
-  try {
-    const result = await rpcHandler({
-      jsonrpc: "2.0",
-      id: req.query.id ? String(req.query.id) : "models-list",
-      method: "models",
-      params: {},
-    });
-    res.json(result);
-  } catch (error) {
-    console.error("Models list error:", error);
-    res.status(500).json({
-      error: { code: "server_error", message: "Failed to list models" },
-    });
-  }
-});
+// REST hub API
+app.use("/v1", setupHubApiRoutes());
 
 // Tool Loop routes (debug/test direct tool execution)
-app.use("/tools", setupToolLoopRoutes);
+app.use("/tools", setupToolLoopRoutes());
 
 // SSE streaming endpoint
 app.use("/stream", sseRouter);
+
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(webRoot, "index.html"));
+});
 
 // Health check
 app.get("/health", (req, res) => {

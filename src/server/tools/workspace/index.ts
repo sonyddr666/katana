@@ -1,12 +1,23 @@
-import { readFile as fsReadFile, writeFile as fsWriteFile, access, mkdir } from "fs/promises";
-import { join, resolve } from "path";
+import {
+  access,
+  appendFile as fsAppendFile,
+  mkdir,
+  readdir,
+  readFile as fsReadFile,
+  stat,
+  unlink,
+  writeFile as fsWriteFile,
+} from "fs/promises";
+import path from "path";
+
 import { config } from "../../config/env";
 
-const WORKSPACE_ROOT = config.workspaceDir || "/workspace";
+const WORKSPACE_ROOT = path.resolve(config.workspaceDir);
 
 function safePath(relativePath: string): string {
-  const fullPath = resolve(WORKSPACE_ROOT, relativePath);
-  if (!fullPath.startsWith(WORKSPACE_ROOT)) {
+  const fullPath = path.resolve(WORKSPACE_ROOT, relativePath || ".");
+  const relative = path.relative(WORKSPACE_ROOT, fullPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Path traversal attempt detected");
   }
   return fullPath;
@@ -30,11 +41,12 @@ export async function readFile(args: { filepath: string }): Promise<any> {
     }
 
     const content = await fsReadFile(fullPath, "utf-8");
+    const fileStats = await stat(fullPath);
 
     return {
       ok: true,
       scope: "workspace",
-      data: { filepath, content, size: content.length },
+      data: { filepath, content, size: fileStats.size },
       suggested_next: "Use write_file or append_file to modify",
     };
   } catch (error: any) {
@@ -51,16 +63,9 @@ export async function writeFile(args: { filepath: string; content: string }): Pr
 
   try {
     const fullPath = safePath(filepath);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf("/") || fullPath.length);
+    const dir = path.dirname(fullPath);
 
-    // Ensure directory exists
-    if (dir) {
-      try {
-        await mkdir(dir, { recursive: true });
-      } catch {
-        // ignore mkdir errors
-      }
-    }
+    await mkdir(dir, { recursive: true });
 
     await fsWriteFile(fullPath, content, "utf-8");
 
@@ -84,16 +89,9 @@ export async function appendFile(args: { filepath: string; content: string }): P
 
   try {
     const fullPath = safePath(filepath);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
-
-    try {
-      await mkdir(dir, { recursive: true });
-    } catch {
-      // dir might be empty (root), ignore
-    }
-
-    const fs = await import("fs");
-    fs.appendFileSync(fullPath, content + "\n", "utf-8");
+    const dir = path.dirname(fullPath);
+    await mkdir(dir, { recursive: true });
+    await fsAppendFile(fullPath, content, "utf-8");
 
     return {
       ok: true,
@@ -115,17 +113,27 @@ export async function listFiles(args: { dir?: string }): Promise<any> {
 
   try {
     const fullDir = safePath(relativeDir);
-    const fs = await import("fs");
+    const entries = await readdir(fullDir, { withFileTypes: true });
 
-    const entries = fs.readdirSync(fullDir, { withFileTypes: true });
-
-    const files = entries
-      .map((entry) => ({
+    const files = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = path.join(fullDir, entry.name);
+        const entryStats = await stat(entryPath);
+        return {
         name: entry.name,
         isDirectory: entry.isDirectory(),
-        path: join(relativeDir, entry.name),
-      }))
-      .sort((a, b) => (a.isDirectory ? -1 : b.isDirectory ? 1 : 0));
+          path: path.join(relativeDir, entry.name),
+          size: entry.isDirectory() ? 0 : entryStats.size,
+        };
+      })
+    );
+
+    files.sort((a, b) => {
+      if (a.isDirectory === b.isDirectory) {
+        return a.name.localeCompare(b.name);
+      }
+      return a.isDirectory ? -1 : 1;
+    });
 
     return {
       ok: true,
@@ -146,9 +154,7 @@ export async function deleteFile(args: { filepath: string }): Promise<any> {
 
   try {
     const fullPath = safePath(filepath);
-
-    const fs = await import("fs");
-    fs.unlinkSync(fullPath);
+    await unlink(fullPath);
 
     return {
       ok: true,

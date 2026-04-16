@@ -1,68 +1,119 @@
-import type { Request, Response } from "express";
+import { Router, type Request, type Response } from "express";
 
-// Simple in-memory event emitter for SSE
-interface SSEEvent {
-  id: string;
+interface SseEvent {
   event: string;
-  data: any;
+  data: unknown;
+  sentAt: string;
 }
 
-const eventQueue = new Map<string, Array<SSEEvent>>();
+const clients = new Map<string, Set<Response>>();
+const backlog = new Map<string, SseEvent[]>();
+const MAX_BACKLOG_EVENTS = 100;
 
-export function sseRouter(req: Request, res: Response) {
-  const sessionId = req.query.id as string || String(Date.now());
+function writeEvent(res: Response, event: string, data: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
 
-  // Set SSE headers
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+function queueEvent(sessionId: string, payload: SseEvent): void {
+  const events = backlog.get(sessionId) || [];
+  events.push(payload);
+  if (events.length > MAX_BACKLOG_EVENTS) {
+    events.splice(0, events.length - MAX_BACKLOG_EVENTS);
+  }
+  backlog.set(sessionId, events);
+}
+
+function flushBacklog(sessionId: string, res: Response): void {
+  const events = backlog.get(sessionId);
+  if (!events?.length) {
+    return;
+  }
+
+  for (const payload of events) {
+    writeEvent(res, payload.event, payload.data);
+  }
+
+  backlog.set(sessionId, []);
+}
+
+function registerClient(sessionId: string, res: Response): void {
+  const set = clients.get(sessionId) || new Set<Response>();
+  set.add(res);
+  clients.set(sessionId, set);
+}
+
+function unregisterClient(sessionId: string, res: Response): void {
+  const set = clients.get(sessionId);
+  if (!set) {
+    return;
+  }
+
+  set.delete(res);
+  if (!set.size) {
+    clients.delete(sessionId);
+  }
+}
+
+export const sseRouter = Router();
+
+sseRouter.get("/:id?", (req: Request, res: Response) => {
+  const sessionId = String(req.params.id || req.query.id || "default");
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.flushHeaders?.();
 
-  // Initialize queue for this session
-  if (!eventQueue.has(sessionId)) {
-    eventQueue.set(sessionId, []);
-  }
+  registerClient(sessionId, res);
+  writeEvent(res, "connected", { sessionId, connectedAt: new Date().toISOString() });
+  flushBacklog(sessionId, res);
 
-  // Send initial connection event
-  res.write(`event: connected\ndata: ${JSON.stringify({ sessionId })}\n\n`);
-
-  // Store response object for this session
-  (res as any).sessionId = sessionId;
-
-  // Send queued events
-  const queue = eventQueue.get(sessionId)!;
-  queue.forEach((evt) => {
-    res.write(`event: ${evt.event}\ndata: ${JSON.stringify(evt.data)}\n\n`);
-  });
-  queue.length = 0;
-
-  // Keep connection alive
   const keepAlive = setInterval(() => {
-    res.write(":\n\n");
+    res.write(": ping\n\n");
   }, 15000);
 
-  // Cleanup on disconnect
-  req.on("close", () => {
+  const cleanup = () => {
     clearInterval(keepAlive);
-    console.log(`SSE connection closed for session: ${sessionId}`);
-  });
+    unregisterClient(sessionId, res);
+  };
 
-  res.on("close", () => {
-    clearInterval(keepAlive);
-  });
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+});
 
-  return res;
-}
+export function sendEvent(sessionId: string | undefined, event: string, data: unknown): void {
+  if (!sessionId) {
+    return;
+  }
 
-// Helper to send event to a specific session
-export function sendEvent(sessionId: string, event: string, data: any) {
-  const queue = eventQueue.get(sessionId);
-  if (queue) {
-    queue.push({ id: Date.now().toString(), event, data });
+  const payload: SseEvent = {
+    event,
+    data,
+    sentAt: new Date().toISOString(),
+  };
+
+  const listeners = clients.get(sessionId);
+  if (!listeners?.size) {
+    queueEvent(sessionId, payload);
+    return;
+  }
+
+  for (const client of listeners) {
+    writeEvent(client, event, data);
   }
 }
 
-// Stream tool execution progress (stub - integrated into rpcHandler in production)
-export function streamToolProgress(sessionId: string, toolName: string, status: string, data: any) {
-  sendEvent(sessionId, "tool_update", { tool: toolName, status, data });
+export function streamToolProgress(
+  sessionId: string | undefined,
+  toolName: string,
+  status: "running" | "done" | "error",
+  data: Record<string, unknown>
+): void {
+  sendEvent(sessionId, "tool_update", {
+    tool: toolName,
+    status,
+    ...data,
+  });
 }

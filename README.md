@@ -1,363 +1,276 @@
 # CODEX-JSON-RPC
 
-Servidor de chat com Codex usando **JSON-RPC 2.0** sobre HTTP + streaming SSE, com tool loop nativo, 20 ferramentas e Chat UI integrado. Pronto para Docker + Coolify.
+Servidor de chat com **JSON-RPC 2.0**, **tool loop textual**, **streaming SSE** e um **Hub UI** com modos Tester / Interactive / Histórico / Auth Pool, usando o backend web do Codex em `chatgpt.com/backend-api/codex/responses`, autenticado por **`auth.json`**.
 
-## Features
+## O que está incluído
 
-✅ **JSON-RPC 2.0** - Protocolo padrão com envelope estruturado
-✅ **Tool Loop Engine** - Execução iterativa de ferramentas com detecção de loop infinito
-✅ **20 Tools** - Web, workspace, execução de código, RAG (stub), utilidades
-✅ **SSE Streaming** - Eventos em tempo real via `/stream/:id`
-✅ **Chat UI** - Interface web completa (Markdown, syntax highlight, dark mode)
-✅ **OpenAI-compatible** - Endpoint `/v1/chat/completions` para integração com SDKs existentes
-✅ **Multi-session** - Histórico isolado por `sessionId`
-✅ **Auth Ready** - Suporte a tokens Bearer + auth.json (Codex style)
-✅ **Docker** - Multi-stage build (~80MB), volumes para workspace e auth
+- endpoint principal `POST /rpc`
+- compatibilidade REST em `POST /v1/chat/completions`, `POST /v1/responses` e `GET /v1/models`
+- streaming via `GET /stream/:sessionId`
+- histórico por sessão persistido em `.data/history`
+- histórico de chats nomeados em `.data/chats`
+- auth pool com slots `auth1..auth5`
+- controle global de retomada nativa (o bridge envia `store: false` ao Codex e, quando habilitado, tenta encadear via `previous_response_id`)
+- upload simples de arquivos em `.data/uploads`
+- tool loop com:
+  - limite configurável por `MAX_TOOL_LOOPS`
+  - timeout por tool via `TOOL_TIMEOUT_MS`
+  - bloqueio de tools por request (`disabled_tools`)
+  - detecção de loop infinito para tool + args repetidos
+- registry com tools de:
+  - web (`search_web`, `fetch_url`, `search_news`)
+  - workspace (`read_file`, `write_file`, `append_file`, `list_files`, `delete_file`)
+  - execução (`run_js`, `run_python`, `eval_math`)
+  - RAG stub persistente (`search_rag`, `ingest_file`, `rag_status`)
+  - sistema (`get_datetime`, `uuid`, `base64_encode`, `base64_decode`, `json_format`)
+- UI com markdown, highlight, copy button em blocos de código, badges de tools e timeline de tentativas
 
-## Quick Start
+## Arquitetura
 
-### Com Docker
+```text
+Hub UI (src/web)
+  -> POST /v1/chat/completions
+  -> POST /v1/responses
+  -> GET /v1/chats / auth-pool / store / models
 
-```bash
-# Clone e entre no diretório
-git clone <repo>
-cd CODEX-JSON-RPC
+Express server (src/server/index.ts)
+  -> rpcHandler()
+  -> history store
+  -> chat store
+  -> auth pool
+  -> file store
+  -> tool loop engine
+  -> tool registry
 
-# Copie o exemplo de env
-cp .env.example .env
-
-# Edite .env com sua API key (OPENAI_API_KEY) se for usar RAG
-
-# Suba com Docker Compose
-docker-compose up -d
-
-# Acesse
-# Chat UI: http://localhost:8080/
-# JSON-RPC: POST http://localhost:8080/rpc
-# OpenAI-compat: POST http://localhost:8080/v1/chat/completions
+Codex bridge
+  -> auth.json + refresh em chatgpt.com/api/auth/session
+  -> requests para chatgpt.com/backend-api/codex/responses
+  -> tool loop próprio via blocos ```tool_call```
 ```
 
-### Sem Docker (desenvolvimento)
+## Como rodar
+
+### Desenvolvimento
 
 ```bash
+cd CODEX-JSON-RPC
+copy .env.example .env
 npm install
 npm run dev
 ```
 
-## API Reference
+> Para o chat real funcionar, coloque um `auth.json` válido na raiz do projeto ou forneça `AUTH_JSON` via env.
 
-### JSON-RPC 2.0 Endpoints
+Abrir:
 
-#### POST /rpc
+- Chat UI: `http://localhost:8080/`
+- JSON-RPC: `http://localhost:8080/rpc`
+- OpenAI compat: `http://localhost:8080/v1/chat/completions`
+
+### Docker
+
+```bash
+cd CODEX-JSON-RPC
+copy .env.example .env
+docker-compose up -d --build
+```
+
+## Variáveis de ambiente
+
+| Variável | Padrão | Uso |
+|---|---|---|
+| `HOST` | `0.0.0.0` | bind HTTP |
+| `PORT` | `8080` | porta HTTP |
+| `NODE_ENV` | `development` | modo da aplicação |
+| `MAX_TOOL_LOOPS` | `8` | máximo de iterações do tool loop |
+| `TOOL_TIMEOUT_MS` | `15000` | timeout por tool/model request |
+| `WORKSPACE_DIR` | `./workspace` | diretório manipulado pelas workspace tools |
+| `DATA_DIR` | `./.data` | persistência local de histórico e RAG stub |
+| `CHATS_DIR` | `./.data/chats` | diretório de chats persistidos |
+| `UPLOADS_DIR` | `./.data/uploads` | diretório de uploads servidos em `/v1/files/:id` |
+| `AUTH_POOL_DIR` | `./.data/auth-pool` | diretório dos slots `auth1..auth5` |
+| `STORE_STATE_FILE` | `./.data/store-state.json` | estado global da retomada nativa via `previous_response_id` |
+| `ADMIN_PIN` | vazio | PIN opcional para proteger rotas do auth pool fora de localhost |
+| `CODEX_RESPONSES_URL` | `https://chatgpt.com/backend-api/codex/responses` | endpoint real do backend web do Codex |
+| `CODEX_REFRESH_URL` | `https://chatgpt.com/api/auth/session` | endpoint de refresh do token da sessão ChatGPT |
+| `DEFAULT_CODEX_MODEL` | `gpt-5.4-mini` | modelo default do Codex |
+| `AVAILABLE_MODELS` | lista `gpt-5.*` codex | modelos expostos em `/v1/models` |
+| `QDRANT_HOST` | vazio | metadata opcional para RAG |
+| `QDRANT_COLLECTION` | `codex-rag` | nome lógico da coleção |
+| `AUTH_FILE` | `./auth.json` | arquivo de auth estilo Codex |
+| `AUTH_JSON` | vazio | alternativa para injetar o auth via env |
+
+## Métodos JSON-RPC
+
+### `chat`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": "1",
+  "id": "chat-1",
   "method": "chat",
   "params": {
-    "model": "codex-mini",
+    "model": "gpt-5.4-mini",
+    "sessionId": "demo-session",
     "messages": [
-      { "role": "user", "content": "List files in workspace" }
+      { "role": "user", "content": "/tool list_files {\"dir\":\".\"}" }
     ],
-    "tools_enabled": ["list_files", "read_file"],
-    "sessionId": "session-123"
+    "tools_enabled": ["*"],
+    "disabled_tools": []
   }
 }
 ```
 
-**Resposta:**
+### `models`
+
+Lista os modelos disponíveis para UI/REST compat.
+
+### `tools.list`
+
+Retorna o registry com descrição, scope e schema JSON Schema-like de cada tool.
+
+### `tools.run`
+
+Executa uma tool diretamente para debug:
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": "1",
-  "result": {
-    "model": "codex-mini",
-    "choices": [{
-      "message": {
-        "role": "assistant",
-        "content": "Tool loop completed. Attempts: 1."
-      },
-      "finish_reason": "stop"
-    }],
-    "tool_execution": {
-      "attempts": [{
-        "action": "list_files",
-        "result": "ok",
-        "latency_ms": 45
-      }]
-    },
-    "sessionId": "session-123"
+  "id": "tool-1",
+  "method": "tools.run",
+  "params": {
+    "tool": "eval_math",
+    "args": { "expression": "12 * 15 + 3" }
   }
 }
 ```
 
-#### Métodos disponíveis
+### `history.get` / `history.clear`
 
-| Método | Descrição |
-|--------|-----------|
-| `chat` | Envia mensagem com tool loop automático |
-| `models` | Lista modelos disponíveis |
-| `tools.list` | Lista todas as 20 tools com schemas JSON-Schema |
-| `tools.run` | Executa uma tool diretamente (debug) |
-| `history.get` | Recupera histórico de uma sessão |
-| `history.clear` | Limpa histórico de uma sessão |
+Gerenciam o histórico isolado por `sessionId`.
 
-### OpenAI-Compatible
+## Streaming SSE
 
-```bash
-POST /v1/chat/completions
-Content-Type: application/json
+Abra um `EventSource` em `/stream/<sessionId>` para receber:
 
-{
-  "model": "codex-mini",
-  "messages": [{"role": "user", "content": "What time is it?"}],
-  "tools": [...]  // optional tool definitions
-}
+- `connected`
+- `session_status`
+- `tool_update`
+- `assistant_delta`
+- `assistant_message`
+
+Exemplo:
+
+```js
+const es = new EventSource("/stream/demo-session");
+es.addEventListener("tool_update", (event) => {
+  console.log(JSON.parse(event.data));
+});
 ```
 
-### SSE Streaming
+## Compat REST estilo OpenAI
 
-```javascript
-const es = new EventSource(`/stream/${sessionId}`);
-es.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log(data);
-};
+### `POST /v1/chat/completions`
+
+Aceita payload estilo OpenAI e converte para o método `chat` interno, mas a execução real vai para o backend web do Codex via `auth.json`.
+
+### `GET /v1/models`
+
+Retorna `{ object: "list", data: [...] }`.
+
+## Hub REST adicional
+
+Rotas novas usadas pela Hub UI:
+
+- `GET /v1/store`
+- `POST /v1/store/enable`
+- `POST /v1/store/disable`
+- `GET /v1/chats`
+- `GET /v1/chats/search?q=...`
+- `GET /v1/chats/:chatId`
+- `POST /v1/chats/:chatId/resume`
+- `DELETE /v1/chats/:chatId`
+- `DELETE /v1/threads/:sessionId`
+- `GET /v1/auth-pool`
+- `GET /v1/auth-pool/:slotId`
+- `PUT /v1/auth-pool/:slotId`
+- `DELETE /v1/auth-pool/:slotId`
+- `POST /v1/auth-pool/:slotId/test`
+- `POST /v1/auth-pool/activate`
+- `POST /v1/files`
+- `GET /v1/files/:fileId`
+
+## RAG local stub
+
+O projeto não depende de um Qdrant real para funcionar. Quando você chama `ingest_file`, o conteúdo é indexado localmente em `.data/rag-store.json`, permitindo:
+
+- `ingest_file` para indexação
+- `search_rag` para busca semântica simples por tokens
+- `rag_status` para inspecionar o estado do store
+
+Isso deixa o scaffold funcional já no commit inicial, enquanto mantém espaço para integrar embeddings/Qdrant reais depois.
+
+## UI
+
+A UI em `src/web` agora inclui:
+
+- modo **Tester**
+- modo **Interactive** com `support_tools`
+- painel de **Histórico** com retomar / exportar / apagar
+- painel de **Auth Pool**
+- visor de **logs/stream**
+- seletor de modelo, reasoning, system prompt e modo de retomada nativa
+- render markdown + syntax highlight + copy button
+
+## Deploy com Coolify
+
+O `Dockerfile` e `docker-compose.yml` já foram organizados para deploy simples. Em Coolify, basta:
+
+1. apontar para o repositório
+2. configurar `.env`
+3. montar os volumes de `auth.json` e `workspace`
+4. expor a porta do `PORT`
+
+## Estrutura principal
+
+```text
+src/server/
+  index.ts
+  rpc.ts
+  sse.ts
+  history/
+  middlewares/
+  tools/
+  tools-loop/
+
+src/web/
+  index.html
+  sse-client.js
+  assets/main.js
+  assets/main.css
 ```
 
-## Tools Disponíveis
+## Observação importante sobre tools
 
-### Web & Dados Externos (3)
+O endpoint do Codex usado aqui **não expõe function calling OpenAI nativo**. Por isso o projeto usa um **tool loop textual**, com um system prompt instruindo o modelo a emitir blocos:
 
-| Tool | Descrição | Args |
-|------|-----------|------|
-| `search_web` | DuckDuckGo scraper (top 5) | `query: string` |
-| `fetch_url` | Busca conteúdo de URL | `url: string`, `selector?` |
-| `search_news` | RSS de notícias recentes | `query: string`, `days?` |
-
-### Workspace (5)
-
-| Tool | Descrição | Args |
-|------|-----------|------|
-| `read_file` | Lê arquivo | `filepath: string` |
-| `write_file` | Cria/sobrescreve | `filepath: string`, `content: string` |
-| `append_file` | Adiciona ao final | `filepath: string`, `content: string` |
-| `list_files` | Lista diretório | `dir?` |
-| `delete_file` | Remove arquivo | `filepath: string` |
-
-### Código & Execução (3)
-
-| Tool | Descrição | Args |
-|------|-----------|------|
-| `run_js` | JS sandbox (vm) | `code: string` |
-| `run_python` | Python subprocess (10s timeout) | `code: string` |
-| `eval_math` | Expressões matemáticas seguras | `expression: string` |
-
-### RAG & Memória (3)
-
-| Tool | Descrição | Args |
-|------|-----------|------|
-| `search_rag` | Busca semântica (Qdrant stub) | `query: string`, `top_k?` |
-| `ingest_file` | Indexa arquivo (stub) | `filepath: string`, `userId: string` |
-| `rag_status` | Status da coleção | sem args |
-
-### Sistema & Utilitários (5)
-
-| Tool | Descrição | Args |
-|------|-----------|------|
-| `get_datetime` | Data/hora atual | `timezone?` |
-| `uuid` | Gera UUID v4 | sem args |
-| `base64_encode` | Codifica Base64 | `text: string` |
-| `base64_decode` | Decodifica Base64 | `text: string` |
-| `json_format` | Formata/valida JSON | `raw: string` |
-
-## Tool Loop Engine
-
-O tool loop executa até **8 iterações** (configurável via `MAX_TOOL_LOOPS`) ou até o modelo parar de chamar ferramentas.
-
-**Detecção de loop infinito:** Se a mesma tool for chamada 2x com os mesmos argumentos, o loop é interrompido automaticamente.
-
-**Contrato de envelope** (retorno de cada tool):
-
-```typescript
-{
-  ok: true,              // boolean: sucesso da execução
-  scope: "web",          // "web" | "workspace" | "rag" | "system"
-  data: { ... },         // resultado específico da tool
-  attempts?: [...],      // histórico de attempts (opcional)
-  suggested_next?: ""    // hint para próximos steps (opcional)
-}
+```text
+```tool_call
+{"jsonrpc":"2.0","id":"...","method":"tool_name","params":{...}}
+```
 ```
 
-## Configuração
+O backend detecta esses blocos, executa a tool local e injeta um `tool_result` na próxima rodada.
 
-Variáveis de ambiente `.env`:
+## Observação importante sobre `store`
 
-| Variável | Padrão | Descrição |
-|----------|--------|-----------|
-| `PORT` | 8080 | Porta HTTP |
-| `HOST` | 0.0.0.0 | Host bind |
-| `MAX_TOOL_LOOPS` | 8 | Máximo de iterations do tool loop |
-| `TOOL_TIMEOUT_MS` | 15000 | Timeout por tool (ms) |
-| `WORKSPACE_DIR` | /workspace | Diretório de workspace |
-| `OPENAI_API_KEY` | - | Para embeddings RAG (opcional) |
-| `QDRANT_HOST` | http://localhost:6333 | Host Qdrant (opcional) |
-| `QDRANT_COLLECTION` | codex-rag | Nome da coleção |
-| `AUTH_FILE` | /app/auth.json | Caminho do auth.json |
+No fluxo HTTP atual deste projeto, o payload enviado ao backend web do Codex usa **`store: false` sempre**. O controle exposto em `/v1/store` e na Hub UI não ativa o `store=true` remoto; ele apenas decide se o servidor deve tentar uma retomada mais eficiente via `previous_response_id` quando já existe um `response_id` salvo para o chat.
 
-## Chat UI
+## Smoke test
 
-A interface web está em `src/web/` e é servida estaticamente. Funcionalidades:
+- `npm run smoke` valida boot, UI, `/v1/models`, `/v1/store`, `/v1/chats`, `/v1/auth-pool` e tools locais.
+- Se houver `auth.json` ou `AUTH_JSON`, ele também valida uma chamada real de chat contra o backend do Codex.
 
-- Markdown rendering com syntax highlight (via CDN)
-- Badges inline para tools: `🔧 search_web("query") [✅]`
-- Timeline expansível de attempts por mensagem
-- Model selector dinâmico
-- Toggle "Tools Enabled"
-- Multi-session com histórico isolado
-- Tema dark/light automático
-
-## Arquitetura
-
-```
-┌─────────┐      POST /rpc       ┌─────────────────┐
-│ Chat UI │ ◄───────────────────► │   Express.js    │
-│ (SSE)   │      SSE /stream      │   JSON-RPC 2.0  │
-└─────────┘                       └────────┬────────┘
-         │                                  │
-         │ tool calls                      │ rpcHandler
-         │                                  ▼
-         │                       ┌─────────────────────┐
-         │                       │  Method Router      │
-         │                       │  - chat             │
-         │                       │  - tools.list       │
-         │                       │  - tools.run        │
-         │                       │  - history.*        │
-         │                       └─────────┬───────────┘
-         │                                 │
-         │                                 ▼
-         │                       ┌─────────────────────┐
-         │                       │  Tool Loop Engine   │
-         │                       │  - max loops        │
-         │                       │  - infinite detect  │
-         │                       │  - tool dispatch    │
-         │                       └─────────┬───────────┘
-         │                                 │
-         │                       ┌─────────▼───────────┐
-         │                       │   Tool Registry     │
-         │                       │   20 implementations│
-         │                       └─────────────────────┘
-```
-
-## Health Check
-
-```bash
-curl http://localhost:8080/health
-# { "status": "ok", "timestamp": "..." }
-```
-
-## Exemplos de Uso
-
-### 1. Listar arquivos do workspace
-
-```bash
-curl -X POST http://localhost:8080/rpc \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "chat",
-    "params": {
-      "messages": [{"role": "user", "content": "List files in workspace"}],
-      "tools_enabled": ["list_files"]
-    }
-  }'
-```
-
-### 2. Executar数学
-
-```bash
-curl -X POST http://localhost:8080/rpc \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "2",
-    "method": "tools.run",
-    "params": {
-      "tool": "eval_math",
-      "args": {"expression": "12 * 15 + 3"}
-    }
-  }'
-```
-
-### 3. OpenAI SDK
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="sk-dummy"
-)
-
-response = client.chat.completions.create(
-    model="codex-mini",
-    messages=[{"role": "user", "content": "What time is it in UTC?"}],
-    tools=[{"type": "function", "function": {
-        "name": "get_datetime",
-        "description": "Get current time",
-        "parameters": {"type": "object", "properties": {}}
-    }}]
-)
-```
-
-## Docker + Coolify
-
-O projeto está otimizado para deployment no Coolify:
-
-```yaml
-# docker-compose.yml already configured for Coolify
-services:
-  codex-json-rpc:
-    build: .
-    ports:
-      - "${PORT:-8080}:8080"
-    volumes:
-      - ./auth.json:/app/auth.json:ro
-      - ./workspace:/workspace
-    env_file: .env
-    restart: unless-stopped
-```
-
-No Coolify:
-1. Crie novo serviço → Custom Docker Image
-2. Aponte para seu repositório
-3. Configure variáveis de ambiente (PORT, OPENAI_API_KEY, etc)
-4. Adicione volumes: `./auth.json:/app/auth.json`, `./workspace:/workspace`
-5. Exponha porta 8080 (ou a que preferir)
-
-## FAQ
-
-### Preciso de token de acesso?
-
-Para desenvolvimento local, não. Em produção, configure `auth.json` ou use Bearer token no header `Authorization`.
-
-### O RAG funciona sem Qdrant?
-
-O stub retorna erro amigável. Para ativar, configure `QDRANT_HOST` + `OPENAI_API_KEY` e implemente os handlers reais.
-
-### Como adicionar uma tool nova?
-
-1. Crie arquivo em `src/server/tools/<categoria>/nome.ts`
-2. Exporte função `async (args) => Envelope`
-3. Adicione no `src/server/tools/registry.ts`
-
-### Posso usar com Claude Code?
-
-Sim, via MCP bridging. O protocolo JSON-RPC é compatível com MCP servers.
-
-## License
+## Licença
 
 MIT

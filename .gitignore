@@ -3,8 +3,10 @@ dist
 *.log
 .env
 auth.json
+.data
 workspace/*
 !workspace/.gitkeep
+!workspace/README.md
 .DS_Store
 coverage
 *.tsbuildinfo

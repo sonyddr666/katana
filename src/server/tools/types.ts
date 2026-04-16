@@ -1,18 +1,29 @@
+export type ToolScope = "web" | "workspace" | "rag" | "system";
+
+export interface ToolSchemaProperty {
+  type?: string | string[];
+  description?: string;
+  items?: Record<string, unknown>;
+  properties?: Record<string, ToolSchemaProperty>;
+  additionalProperties?: boolean | ToolSchemaProperty;
+}
+
 export interface ToolSchema {
   name: string;
   description: string;
-  scope: "web" | "workspace" | "rag" | "system";
+  scope: ToolScope;
   schema: {
     type: "object";
-    properties: Record<string, { type: string; description?: string }>;
+    properties: Record<string, ToolSchemaProperty>;
     required?: string[];
+    additionalProperties?: boolean;
   };
-  handler: (args: any) => Promise<any>;
+  handler: (args: any) => Promise<Envelope>;
 }
 
 export type Envelope<T = any> = {
   ok: boolean;
-  scope: ToolSchema["scope"];
+  scope: ToolScope;
   data: T;
   attempts?: Array<{
     action: string;

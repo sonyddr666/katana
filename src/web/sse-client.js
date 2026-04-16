@@ -1,56 +1,71 @@
-// SSE Client for real-time streaming updates
-// Not fully integrated yet - placeholder for future enhancement
-
 export class SSEClient {
-  private eventSource: EventSource | null = null;
-  private sessionId: string;
-  private onToolUpdate?: (data: any) => void;
-  private onConnected?: () => void;
-
-  constructor(sessionId: string) {
+  constructor(sessionId) {
     this.sessionId = sessionId;
+    this.eventSource = null;
+    this.onToolUpdate = null;
+    this.onConnected = null;
+    this.onAssistantDelta = null;
+    this.onCodexEvent = null;
   }
 
   connect() {
-    const url = `/stream/${this.sessionId}`;
+    const url = `/stream/${encodeURIComponent(this.sessionId)}`;
     this.eventSource = new EventSource(url);
 
-    this.eventSource.onopen = () => {
-      console.log(`[SSE] Connected for session ${this.sessionId}`);
-      this.onConnected?.();
-    };
-
-    this.eventSource.onmessage = (event) => {
-      console.log("[SSE] Message:", event.data);
-    };
-
-    this.eventSource.addEventListener("tool_update", (event: MessageEvent) => {
+    this.eventSource.addEventListener("connected", (event) => {
       const data = JSON.parse(event.data);
-      console.log("[SSE] Tool update:", data);
-      this.onToolUpdate?.(data);
+      console.log("[SSE] Connected:", data);
+      if (typeof this.onConnected === "function") {
+        this.onConnected(data);
+      }
     });
 
-    this.eventSource.onerror = (err) => {
-      console.error("[SSE] Error:", err);
-      this.disconnect();
+    this.eventSource.addEventListener("tool_update", (event) => {
+      const data = JSON.parse(event.data);
+      if (typeof this.onToolUpdate === "function") {
+        this.onToolUpdate(data);
+      }
+    });
+
+    this.eventSource.addEventListener("assistant_delta", (event) => {
+      const data = JSON.parse(event.data);
+      if (typeof this.onAssistantDelta === "function") {
+        this.onAssistantDelta(data);
+      }
+    });
+
+    this.eventSource.addEventListener("codex_event", (event) => {
+      const data = JSON.parse(event.data);
+      if (typeof this.onCodexEvent === "function") {
+        this.onCodexEvent(data);
+      }
+    });
+
+    this.eventSource.onerror = (error) => {
+      console.warn("[SSE] Error:", error);
     };
   }
 
-  onToolUpdateCallback(cb: (data: any) => void) {
+  onToolUpdateCallback(cb) {
     this.onToolUpdate = cb;
   }
 
-  onConnectedCallback(cb: () => void) {
+  onConnectedCallback(cb) {
     this.onConnected = cb;
   }
 
+  onAssistantDeltaCallback(cb) {
+    this.onAssistantDelta = cb;
+  }
+
+  onCodexEventCallback(cb) {
+    this.onCodexEvent = cb;
+  }
+
   disconnect() {
-    this.eventSource?.close();
-    this.eventSource = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
   }
 }
-
-// Auto-connect on page load if sessionId exists
-document.addEventListener("DOMContentLoaded", () => {
-  // Future: integrate with main.js for live tool updates
-});

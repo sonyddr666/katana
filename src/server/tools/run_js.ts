@@ -4,11 +4,13 @@ export async function runJs(args: { code: string }): Promise<any> {
   const { code } = args;
 
   try {
-    // Create a sandbox with limited context
+    const logs: string[] = [];
+    const formatLog = (...items: any[]) => items.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(" ");
+
     const sandbox = {
       console: {
-        log: (...args: any[]) => console.log("[JS]", ...args),
-        error: (...args: any[]) => console.error("[JS]", ...args),
+        log: (...items: any[]) => logs.push(formatLog(...items)),
+        error: (...items: any[]) => logs.push(`[error] ${formatLog(...items)}`),
       },
       Math: Math,
       Date: Date,
@@ -27,24 +29,14 @@ export async function runJs(args: { code: string }): Promise<any> {
       decodeURIComponent,
     };
 
-    // Create context with limited globals
     const context = vm.createContext(sandbox);
-
-    // Run code with timeout
-    let result: any;
     const execution = vm.runInContext(code, context, { timeout: 5000 });
-    result = execution;
-
-    try {
-      result = JSON.stringify(result);
-    } catch {
-      // not JSON serializable, keep as is
-    }
+    const result = typeof execution === "string" ? execution : JSON.stringify(execution ?? null, null, 2);
 
     return {
       ok: true,
       scope: "system",
-      data: { result, type: typeof result },
+      data: { result, type: typeof execution, logs },
       suggested_next: "Use the result in your next step",
     };
   } catch (error: any) {

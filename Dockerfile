@@ -1,18 +1,19 @@
 # Stage 1: dependencies
-FROM node:18-alpine AS deps
+FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --only=production
+RUN npm ci
 
 # Stage 2: builder
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
+RUN npm prune --omit=dev
 
 # Stage 3: runner
-FROM node:18-alpine AS runner
+FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -26,6 +27,8 @@ RUN addgroup --system --gid 1001 nodejs && \
 COPY --from=builder --chown=codex:nodejs /app/dist ./dist
 COPY --from=builder --chown=codex:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=codex:nodejs /app/package.json ./
+COPY --from=builder --chown=codex:nodejs /app/src/web ./src/web
+COPY --from=builder --chown=codex:nodejs /app/auth.example.json ./auth.example.json
 
 # Create directories
 RUN mkdir -p /workspace && chown codex:nodejs /workspace

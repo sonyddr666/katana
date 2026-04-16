@@ -1,25 +1,50 @@
 import { spawn } from "child_process";
-import { unlinkSync, existsSync } from "fs";
-import { join } from "path";
+import { existsSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
+import { join } from "path";
+
+import { config } from "../config/env";
 
 export async function runPython(args: { code: string }): Promise<any> {
   const { code } = args;
 
   try {
-    // Write code to temp file
     const tmpDir = tmpdir();
     const scriptPath = join(tmpDir, `codex_py_${Date.now()}.py`);
-
     const fs = await import("fs");
     fs.writeFileSync(scriptPath, code, "utf-8");
 
+    const pythonExecutable = process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+
     return new Promise((resolve) => {
       const started = Date.now();
-      const timeoutMs = 10000;
+      const timeoutMs = Math.min(config.toolTimeoutMs, 10000);
+      let settled = false;
+      let timeoutHandle: NodeJS.Timeout | undefined;
 
-      const proc = spawn("python3", [scriptPath], {
-        timeout: timeoutMs,
+      const cleanup = () => {
+        try {
+          if (existsSync(scriptPath)) {
+            unlinkSync(scriptPath);
+          }
+        } catch {
+          // ignore cleanup errors
+        }
+      };
+
+      const finish = (payload: any) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        cleanup();
+        resolve(payload);
+      };
+
+      const proc = spawn(pythonExecutable, [scriptPath], {
         cwd: tmpDir,
       });
 
@@ -35,15 +60,9 @@ export async function runPython(args: { code: string }): Promise<any> {
       });
 
       proc.on("close", (code) => {
-        try {
-          if (existsSync(scriptPath)) unlinkSync(scriptPath);
-        } catch {
-          /* ignore cleanup errors */
-        }
-
         const latency = Date.now() - started;
 
-        resolve({
+        finish({
           ok: code === 0,
           scope: "system",
           data: {
@@ -57,27 +76,20 @@ export async function runPython(args: { code: string }): Promise<any> {
       });
 
       proc.on("error", (err) => {
-        try {
-          if (existsSync(scriptPath)) unlinkSync(scriptPath);
-        } catch {
-          /* ignore */
-        }
-
-        resolve({
+        finish({
           ok: false,
           scope: "system",
           data: { error: err.message },
-          suggested_next: "Ensure python3 is installed and accessible",
+          suggested_next: `Ensure ${pythonExecutable} is installed and accessible`,
         });
       });
 
-      // Timeout guard
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         proc.kill("SIGKILL");
-        resolve({
+        finish({
           ok: false,
           scope: "system",
-          data: { error: "Execution timeout (10s)" },
+          data: { error: `Execution timeout (${timeoutMs}ms)` },
           suggested_next: "Simplify the code or increase timeout",
         });
       }, timeoutMs);

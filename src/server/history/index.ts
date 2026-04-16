@@ -1,4 +1,4 @@
-import { getSession, clearSession } from "./store";
+import { clearSession, getSession } from "./store";
 
 export interface RpcResponse {
   jsonrpc: "2.0";
@@ -12,7 +12,7 @@ export interface RpcResponse {
 }
 
 export async function handleHistoryGet(params: {
-  sessionId: string;
+  sessionId?: string;
 }): Promise<RpcResponse> {
   const { sessionId } = params;
 
@@ -24,7 +24,7 @@ export async function handleHistoryGet(params: {
     };
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     return {
       jsonrpc: "2.0",
@@ -46,7 +46,7 @@ export async function handleHistoryGet(params: {
 }
 
 export async function handleHistoryClear(params: {
-  sessionId: string;
+  sessionId?: string;
 }): Promise<RpcResponse> {
   const { sessionId } = params;
 
@@ -58,7 +58,7 @@ export async function handleHistoryClear(params: {
     };
   }
 
-  const deleted = clearSession(sessionId);
+  const deleted = await clearSession(sessionId);
 
   return {
     jsonrpc: "2.0",

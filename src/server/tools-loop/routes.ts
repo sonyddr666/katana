@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { config } from "../config/env";
 import { getToolByName, listTools } from "../tools/registry";
 import type { Request, Response } from "express";
 
@@ -13,8 +14,8 @@ export function setupToolLoopRoutes(): Router {
       result: {
         tools: listTools(),
         config: {
-          max_loops: 8,
-          timeout_ms: 15000,
+          max_loops: config.maxToolLoops,
+          timeout_ms: config.toolTimeoutMs,
         },
       },
     });
@@ -24,11 +25,11 @@ export function setupToolLoopRoutes(): Router {
   router.post("/run", async (req: Request, res: Response) => {
     const { tool, args } = req.body;
 
-    if (!tool || typeof args !== "object") {
+    if (!tool || (args !== undefined && (typeof args !== "object" || Array.isArray(args)))) {
       return res.status(400).json({
         jsonrpc: "2.0",
         id: null,
-        error: { code: -32602, message: "Invalid params: tool and args required" },
+        error: { code: -32602, message: "Invalid params: tool is required and args must be an object when provided" },
       });
     }
 
@@ -43,7 +44,7 @@ export function setupToolLoopRoutes(): Router {
     }
 
     try {
-      const result = await toolDef.handler(args);
+      const result = await toolDef.handler(args || {});
       res.json({
         jsonrpc: "2.0",
         id: `tool-${Date.now()}`,

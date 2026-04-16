@@ -1,51 +1,36 @@
-import { toZonedTime, formatInTimeZone } from "date-fns-tz";
-
 export async function getDatetime(args: { timezone?: string }): Promise<any> {
   const { timezone } = args;
 
   try {
     const now = new Date();
-
-    if (timezone) {
-      try {
-        // Use date-fns-tz for timezone handling
-        const formatted = formatInTimeZone(now, timezone, "yyyy-MM-dd HH:mm:ss zzz");
-        const zonedDate = toZonedTime(now, timezone);
-        const offset = zonedDate.getTimezoneOffset();
-
-        return {
-          ok: true,
-          scope: "system",
-          data: {
-            timezone,
-            offset_minutes: offset,
-            datetime: formatted,
-            iso: zonedDate.toISOString(),
-          },
-        };
-      } catch (tzError) {
-        return {
-          ok: false,
-          scope: "system",
-          data: { error: `Invalid timezone: ${timezone}` },
-        };
-      }
-    }
+    const effectiveTimezone = timezone || "UTC";
+    const formatted = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: effectiveTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(now);
 
     return {
       ok: true,
       scope: "system",
       data: {
-        timezone: "UTC",
-        datetime: now.toISOString(),
+        timezone: effectiveTimezone,
+        datetime: formatted,
         iso: now.toISOString(),
+        unix_ms: now.getTime(),
       },
+      suggested_next: "Pass a timezone like America/Sao_Paulo to compare regional time.",
     };
   } catch (error: any) {
     return {
       ok: false,
       scope: "system",
-      data: { error: error.message },
+      data: { error: error.message, timezone },
     };
   }
 }

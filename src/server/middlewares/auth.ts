@@ -1,44 +1,57 @@
-import { Request, Response, NextFunction } from "express";
-import { config, loadAuth } from "../config/env";
+import type { NextFunction, Request, Response } from "express";
 
-export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Skip auth for public endpoints
-  const publicPaths = ["/", "/health", "/stream", "/v1/models", "/v1/chat/completions"];
-  if (publicPaths.some((path) => req.path.startsWith(path))) {
-    return next();
+import { loadAuth, refreshAuth, extractAccessToken, extractExpiresSeconds, hasUsableAuth } from "../codex/auth-manager";
+
+function isPublicRequest(req: Request): boolean {
+  if (req.path === "/health") {
+    return true;
   }
 
-  // For /rpc and /tools endpoints, check for bearer token or local auth
+  if (req.path.startsWith("/stream") || req.path.startsWith("/v1/")) {
+    return true;
+  }
+
+  if (req.method === "GET" || req.method === "HEAD") {
+    return !req.path.startsWith("/rpc") && !req.path.startsWith("/tools");
+  }
+
+  return false;
+}
+
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (isPublicRequest(req)) {
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ") && authHeader.replace("Bearer ", "").trim()) {
+    next();
+    return;
+  }
 
-  if (authHeader) {
-    // Bearer token auth (OpenAI-compatible)
-    const token = authHeader.replace("Bearer ", "");
-    // In production, validate token properly
-    if (token.length > 0) {
-      return next();
+  let auth = loadAuth();
+  if (hasUsableAuth(auth)) {
+    const expiresAt = extractExpiresSeconds(auth);
+    if (expiresAt && Date.now() / 1000 > expiresAt - 60) {
+      try {
+        auth = await refreshAuth(auth!);
+      } catch (error) {
+        console.warn("Failed to refresh auth token:", error);
+      }
+    }
+
+    const validUntil = extractExpiresSeconds(auth);
+    if (!validUntil || validUntil > Date.now() / 1000 || Boolean(extractAccessToken(auth))) {
+      next();
+      return;
     }
   }
 
-  // Local auth from auth.json (Codex app-server style)
-  const auth = loadAuth();
-  if (auth && auth.access) {
-    // Token is valid if not expired or will expire in more than 5 minutes
-    const expiresAt = new Date(auth.expires);
-    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
-
-    if (expiresAt > fiveMinutesFromNow) {
-      return next();
-    }
-
-    // Token expired, try to refresh (stub - would call refresh endpoint)
-    console.warn("Auth token expired or expiring soon");
-  }
-
-  // For development, allow without auth but warn
-  if (config.port === 8080) {
-    console.warn("No valid auth found - allowing request (development mode)");
-    return next();
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(`Allowing unauthenticated request to ${req.path} in non-production mode.`);
+    next();
+    return;
   }
 
   res.status(401).json({
