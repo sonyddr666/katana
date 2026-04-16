@@ -1,152 +1,147 @@
 import { promises as fs } from "fs";
 import path from "path";
 
+import { and, eq } from "drizzle-orm";
+
 import { config } from "../../config/env";
+import { getDb } from "../../db";
+import { ragEntries } from "../../db/schema";
+import { chunkText } from "./chunker";
+import { cosineSimilarity, deserialize, embed, embeddingModelName, serialize } from "./embedding";
 
-interface RagEntry {
+interface RagHit {
   id: string;
-  userId: string;
   filepath: string;
-  content: string;
+  chunkIndex: number;
+  userId: string;
   excerpt: string;
-  tokens: string[];
   ingestedAt: string;
-}
-
-interface RagStore {
-  collection: string;
-  status: string;
-  entries: RagEntry[];
-}
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_-]+/u)
-    .filter((token) => token.length > 1);
+  score: number;
 }
 
 function createExcerpt(text: string, maxLength = 240): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength)}…`;
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength)}\u2026`;
 }
 
 function resolveWorkspaceFile(filepath: string): string {
   const workspaceRoot = path.resolve(config.workspaceDir);
   const fullPath = path.resolve(workspaceRoot, filepath);
   const relative = path.relative(workspaceRoot, fullPath);
-
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Path traversal attempt detected");
   }
-
   return fullPath;
-}
-
-async function loadStore(): Promise<RagStore> {
-  try {
-    const raw = await fs.readFile(config.ragStoreFile, "utf-8");
-    return JSON.parse(raw) as RagStore;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return {
-        collection: config.qdrantCollection,
-        status: "ready",
-        entries: [],
-      };
-    }
-
-    throw error;
-  }
-}
-
-async function saveStore(store: RagStore): Promise<void> {
-  await fs.mkdir(path.dirname(config.ragStoreFile), { recursive: true });
-  await fs.writeFile(config.ragStoreFile, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
 }
 
 export async function searchRag(args: {
   query: string;
   top_k?: number;
-  filters?: Record<string, unknown>;
+  filters?: { userId?: string; filepath?: string };
 }): Promise<any> {
   const { query, top_k = 5, filters = {} } = args;
 
+  if (typeof query !== "string" || !query.trim()) {
+    return {
+      ok: false,
+      scope: "rag",
+      data: { error: "Missing 'query' argument" }
+    };
+  }
+
   try {
-    const store = await loadStore();
-    const queryTokens = tokenize(query);
-    const hits = store.entries
-      .filter((entry) => {
-        return Object.entries(filters).every(([key, value]) => {
-          if (value === undefined || value === null || value === "") {
-            return true;
-          }
-          return (entry as any)[key] === value;
-        });
-      })
-      .map((entry) => {
-        const score = queryTokens.reduce((total, token) => total + (entry.tokens.includes(token) ? 1 : 0), 0);
-        return {
-          filepath: entry.filepath,
-          userId: entry.userId,
-          excerpt: entry.excerpt,
-          ingestedAt: entry.ingestedAt,
-          score,
-        };
-      })
-      .filter((entry) => entry.score > 0 || queryTokens.length === 0)
+    const db = getDb();
+    const conditions = [] as any[];
+    if (filters.userId) conditions.push(eq(ragEntries.userId, filters.userId));
+    if (filters.filepath) conditions.push(eq(ragEntries.filepath, filters.filepath));
+
+    const rows = conditions.length
+      ? await db.select().from(ragEntries).where(and(...conditions))
+      : await db.select().from(ragEntries);
+
+    if (rows.length === 0) {
+      return {
+        ok: true,
+        scope: "rag",
+        data: { query, top_k, filters, results: [] },
+        suggested_next: "Index a workspace file with ingest_file before searching again."
+      };
+    }
+
+    const queryEmbedding = embed(query);
+    const hits: RagHit[] = rows
+      .filter((r) => r.embeddingDim === queryEmbedding.dim)
+      .map((r) => ({
+        id: r.id,
+        filepath: r.filepath,
+        chunkIndex: r.chunkIndex,
+        userId: r.userId,
+        excerpt: r.excerpt,
+        ingestedAt: r.ingestedAt,
+        score: cosineSimilarity(queryEmbedding.vector, deserialize(r.embedding))
+      }))
+      .filter((hit) => hit.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, top_k);
+      .slice(0, Math.max(1, Math.min(top_k, 50)));
 
     return {
       ok: true,
       scope: "rag",
-      data: {
-        query,
-        top_k,
-        filters,
-        results: hits,
-      },
+      data: { query, top_k, filters, results: hits, model: embeddingModelName },
       suggested_next: hits.length
         ? "Use read_file to inspect the original document or ingest_file to refresh stale content."
-        : "Index a workspace file with ingest_file before searching again.",
+        : "No semantic match found. Try rephrasing the query or ingest more documents."
     };
   } catch (error: any) {
     return {
       ok: false,
       scope: "rag",
-      data: { error: error.message, query },
+      data: { error: error.message, query }
     };
   }
 }
 
-export async function ingestFile(args: {
-  filepath: string;
-  userId: string;
-}): Promise<any> {
+export async function ingestFile(args: { filepath: string; userId: string }): Promise<any> {
   const { filepath, userId } = args;
+
+  if (!filepath || !userId) {
+    return {
+      ok: false,
+      scope: "rag",
+      data: { error: "Missing 'filepath' or 'userId'" }
+    };
+  }
 
   try {
     const fullPath = resolveWorkspaceFile(filepath);
     const content = await fs.readFile(fullPath, "utf-8");
-    const store = await loadStore();
-    const entry: RagEntry = {
-      id: `${userId}:${filepath}`,
-      userId,
-      filepath,
-      content,
-      excerpt: createExcerpt(content),
-      tokens: tokenize(content),
-      ingestedAt: new Date().toISOString(),
-    };
+    const chunks = chunkText(content);
+    const ingestedAt = new Date().toISOString();
+    const bytes = Buffer.byteLength(content, "utf-8");
+    const db = getDb();
 
-    const index = store.entries.findIndex((item) => item.id === entry.id);
-    if (index >= 0) {
-      store.entries.splice(index, 1, entry);
-    } else {
-      store.entries.push(entry);
+    await db
+      .delete(ragEntries)
+      .where(and(eq(ragEntries.userId, userId), eq(ragEntries.filepath, filepath)));
+
+    let totalTokens = 0;
+    for (const chunk of chunks) {
+      const embedding = embed(chunk.content);
+      totalTokens += embedding.tokens;
+      await db.insert(ragEntries).values({
+        id: `${userId}:${filepath}#${chunk.index}`,
+        userId,
+        filepath,
+        chunkIndex: chunk.index,
+        content: chunk.content,
+        excerpt: createExcerpt(chunk.content),
+        embedding: serialize(embedding.vector),
+        embeddingModel: embedding.model,
+        embeddingDim: embedding.dim,
+        bytes: Buffer.byteLength(chunk.content, "utf-8"),
+        ingestedAt
+      });
     }
-
-    await saveStore(store);
 
     return {
       ok: true,
@@ -154,40 +149,49 @@ export async function ingestFile(args: {
       data: {
         filepath,
         userId,
-        bytes: Buffer.byteLength(content, "utf-8"),
-        tokens: entry.tokens.length,
-        collection: store.collection,
+        bytes,
+        chunks: chunks.length,
+        tokens: totalTokens,
+        model: embeddingModelName,
+        dim: config.embeddingDim
       },
-      suggested_next: "Use search_rag with a natural-language query to retrieve this document.",
+      suggested_next: "Use search_rag with a natural-language query to retrieve this document."
     };
   } catch (error: any) {
     return {
       ok: false,
       scope: "rag",
-      data: { error: error.message, filepath, userId },
+      data: { error: error.message, filepath, userId }
     };
   }
 }
 
-export async function ragStatus(_args: {}): Promise<any> {
+export async function ragStatus(_args: Record<string, unknown> = {}): Promise<any> {
   try {
-    const store = await loadStore();
+    const db = getDb();
+    const rows = await db.select({ userId: ragEntries.userId, filepath: ragEntries.filepath }).from(ragEntries);
+    const files = new Set<string>();
+    for (const r of rows) files.add(`${r.userId}:${r.filepath}`);
+
     return {
       ok: true,
       scope: "rag",
       data: {
-        collection: store.collection,
-        status: store.status,
-        points: store.entries.length,
-        backend: config.qdrantHost ? "qdrant-configured-local-stub-active" : "local-stub",
+        collection: config.qdrantCollection,
+        status: "ready",
+        chunks: rows.length,
+        documents: files.size,
+        model: embeddingModelName,
+        dim: config.embeddingDim,
+        backend: "sqlite-local"
       },
-      suggested_next: "Use ingest_file to add workspace documents to the local stub index.",
+      suggested_next: "Use ingest_file to add workspace documents to the index."
     };
   } catch (error: any) {
     return {
       ok: false,
       scope: "rag",
-      data: { error: error.message },
+      data: { error: error.message }
     };
   }
 }

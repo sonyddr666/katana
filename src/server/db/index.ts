@@ -55,6 +55,23 @@ function runBootstrapMigrations(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS chats_session_id_idx ON chats(session_id);
     CREATE INDEX IF NOT EXISTS chats_updated_at_idx ON chats(updated_at);
+
+    CREATE TABLE IF NOT EXISTS rag_entries (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      filepath TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL DEFAULT 0,
+      content TEXT NOT NULL,
+      excerpt TEXT NOT NULL,
+      embedding TEXT NOT NULL,
+      embedding_model TEXT NOT NULL,
+      embedding_dim INTEGER NOT NULL,
+      bytes INTEGER NOT NULL DEFAULT 0,
+      ingested_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS rag_user_id_idx ON rag_entries(user_id);
+    CREATE INDEX IF NOT EXISTS rag_filepath_idx ON rag_entries(filepath);
   `);
 }
 

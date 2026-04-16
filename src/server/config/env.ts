@@ -50,7 +50,10 @@ const envSchema = z.object({
   STORE_STATE_FILE: z.string().optional(),
   ADMIN_PIN: z.string().default(""),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
-  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120)
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120),
+  EMBEDDING_DIM: z.coerce.number().int().positive().default(384),
+  EMBEDDING_CHUNK_SIZE: z.coerce.number().int().positive().default(1000),
+  EMBEDDING_CHUNK_OVERLAP: z.coerce.number().int().nonnegative().default(150)
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -100,7 +103,10 @@ export const config = {
   storeStateFile: resolveProjectPath(env.STORE_STATE_FILE, ".data/store-state.json"),
   adminPin: env.ADMIN_PIN,
   rateLimitWindowMs: env.RATE_LIMIT_WINDOW_MS,
-  rateLimitMax: env.RATE_LIMIT_MAX
+  rateLimitMax: env.RATE_LIMIT_MAX,
+  embeddingDim: env.EMBEDDING_DIM,
+  embeddingChunkSize: env.EMBEDDING_CHUNK_SIZE,
+  embeddingChunkOverlap: env.EMBEDDING_CHUNK_OVERLAP
 };
 
 for (const directory of [
