@@ -1,0 +1,6 @@
+{
+  "access": "sk-example-access-token",
+  "refresh": "sk-example-refresh-token",
+  "expires": "2026-12-31T23:59:59Z",
+  "accountId": "example-account"
+}

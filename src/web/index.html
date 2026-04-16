@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CODEX-JSON-RPC Chat</title>
+    <link rel="stylesheet" href="assets/main.css" />
+    <!-- Markdown parser and syntax highlight from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <h1>CODEX-JSON-RPC</h1>
+        <div class="controls">
+          <select id="model-select"></select>
+          <label class="toggle">
+            <input type="checkbox" id="tools-enabled" checked />
+            <span>Tools Enabled</span>
+          </label>
+          <button id="clear-chat" title="Clear chat">🗑️</button>
+        </div>
+      </header>
+
+      <main id="chat-container"></main>
+
+      <div class="input-area">
+        <textarea
+          id="prompt"
+          placeholder="Digite sua mensagem... (Shift+Enter para nova linha)"
+          rows="3"
+        ></textarea>
+        <button id="send">
+          <span>Enviar</span>
+        </button>
+      </div>
+
+      <div class="status-bar">
+        <span id="status">Pronto</span>
+        <span id="session-id"></span>
+      </div>
+    </div>
+
+    <script type="module" src="assets/main.js"></script>
+  </body>
+</html>
