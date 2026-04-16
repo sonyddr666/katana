@@ -1,7 +1,7 @@
-import { promises as fs } from "fs";
-import path from "path";
+import { eq } from "drizzle-orm";
 
-import { config } from "../config/env";
+import { getDb } from "../db";
+import { sessions } from "../db/schema";
 
 export interface ToolCall {
   id: string;
@@ -27,97 +27,77 @@ export interface Session {
   updatedAt: string;
 }
 
-function sanitizeSessionId(sessionId: string): string {
-  return String(sessionId || "default").replace(/[^a-zA-Z0-9._-]/g, "_");
-}
-
-function sessionFile(sessionId: string): string {
-  return path.join(config.historyDir, `${sanitizeSessionId(sessionId)}.json`);
-}
-
-async function readSessionFile(sessionId: string): Promise<Session | undefined> {
+function rowToSession(row: { sessionId: string; messagesJson: string; createdAt: string; updatedAt: string }): Session {
+  let messages: Message[] = [];
   try {
-    const raw = await fs.readFile(sessionFile(sessionId), "utf-8");
-    return JSON.parse(raw) as Session;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
+    const parsed = JSON.parse(row.messagesJson);
+    if (Array.isArray(parsed)) messages = parsed as Message[];
+  } catch {
+    // stored JSON invalid — return empty messages
   }
-}
-
-async function writeSessionFile(session: Session): Promise<void> {
-  await fs.mkdir(config.historyDir, { recursive: true });
-  await fs.writeFile(sessionFile(session.sessionId), `${JSON.stringify(session, null, 2)}\n`, "utf-8");
+  return { sessionId: row.sessionId, messages, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 export async function getSession(sessionId: string): Promise<Session | undefined> {
-  if (!sessionId) {
-    return undefined;
-  }
-
-  return readSessionFile(sessionId);
+  if (!sessionId) return undefined;
+  const db = getDb();
+  const rows = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+  if (rows.length === 0) return undefined;
+  return rowToSession(rows[0]);
 }
 
 export async function createSession(sessionId: string, messages: Message[] = []): Promise<Session> {
   const timestamp = new Date().toISOString();
-  const session: Session = {
-    sessionId,
-    messages,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
+  const db = getDb();
+  const session: Session = { sessionId, messages, createdAt: timestamp, updatedAt: timestamp };
 
-  await writeSessionFile(session);
+  await db
+    .insert(sessions)
+    .values({
+      sessionId,
+      messagesJson: JSON.stringify(messages),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    })
+    .onConflictDoUpdate({
+      target: sessions.sessionId,
+      set: { messagesJson: JSON.stringify(messages), updatedAt: timestamp }
+    });
+
   return session;
 }
 
 export async function updateSession(sessionId: string, messages: Message[]): Promise<Session> {
   const existing = await getSession(sessionId);
-  const createdAt = existing?.createdAt || new Date().toISOString();
-  const session: Session = {
-    sessionId,
-    messages,
-    createdAt,
-    updatedAt: new Date().toISOString(),
-  };
+  const now = new Date().toISOString();
+  const createdAt = existing?.createdAt || now;
+  const db = getDb();
 
-  await writeSessionFile(session);
-  return session;
+  await db
+    .insert(sessions)
+    .values({ sessionId, messagesJson: JSON.stringify(messages), createdAt, updatedAt: now })
+    .onConflictDoUpdate({
+      target: sessions.sessionId,
+      set: { messagesJson: JSON.stringify(messages), updatedAt: now }
+    });
+
+  return { sessionId, messages, createdAt, updatedAt: now };
 }
 
 export async function appendMessages(sessionId: string, messages: Message[]): Promise<Session> {
   const existing = await getSession(sessionId);
-  if (!existing) {
-    return createSession(sessionId, messages);
-  }
-
+  if (!existing) return createSession(sessionId, messages);
   return updateSession(sessionId, [...existing.messages, ...messages]);
 }
 
 export async function clearSession(sessionId: string): Promise<boolean> {
-  try {
-    await fs.unlink(sessionFile(sessionId));
-    return true;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
+  const db = getDb();
+  const result = await db.delete(sessions).where(eq(sessions.sessionId, sessionId)).returning();
+  return result.length > 0;
 }
 
 export async function listSessions(): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(config.historyDir, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => entry.name.replace(/\.json$/, ""));
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
+  const db = getDb();
+  const rows = await db.select({ sessionId: sessions.sessionId }).from(sessions);
+  return rows.map((r) => r.sessionId);
 }

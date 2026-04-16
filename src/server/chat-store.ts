@@ -1,7 +1,7 @@
-import { promises as fs } from "fs";
-import path from "path";
+import { and, desc, eq, like, or } from "drizzle-orm";
 
-import { config } from "./config/env";
+import { getDb } from "./db";
+import { chats } from "./db/schema";
 
 export interface ChatAttachment {
   id?: string;
@@ -44,42 +44,106 @@ export interface ChatRecord {
   messages: ChatMessage[];
 }
 
-function sanitizeChatId(chatId: string): string {
-  return String(chatId || "chat").replace(/[^a-zA-Z0-9._-]/g, "_");
-}
-
-function chatFile(chatId: string): string {
-  return path.join(config.chatsDir, `${sanitizeChatId(chatId)}.json`);
+export interface ListChatsOptions {
+  limit?: number;
+  offset?: number;
+  sessionId?: string;
 }
 
 function deriveTitle(messages: ChatMessage[], fallback: string): string {
-  const firstUserMessage = messages.find((message) => message.role === "user" && String(message.content || "").trim());
+  const firstUserMessage = messages.find((m) => m.role === "user" && String(m.content || "").trim());
   const title = String(firstUserMessage?.content || fallback).replace(/\s+/g, " ").trim();
   return title.length > 80 ? `${title.slice(0, 77)}…` : title || fallback;
 }
 
-async function writeChat(record: ChatRecord): Promise<void> {
-  await fs.writeFile(chatFile(record.chat_id), `${JSON.stringify(record, null, 2)}\n`, "utf-8");
+type ChatDbRow = {
+  chatId: string;
+  sessionId: string;
+  title: string;
+  model: string;
+  mode: string;
+  createdAt: number;
+  updatedAt: number;
+  temperature: number | null;
+  systemPrompt: string | null;
+  reasoningEffort: string | null;
+  maxTokens: number | null;
+  authSlot: string | null;
+  responseId: string | null;
+  store: boolean;
+  resumable: boolean;
+  messagesJson: string;
+};
+
+function rowToChat(row: ChatDbRow): ChatRecord {
+  let messages: ChatMessage[] = [];
+  try {
+    const parsed = JSON.parse(row.messagesJson);
+    if (Array.isArray(parsed)) messages = parsed as ChatMessage[];
+  } catch {
+    // invalid stored JSON — empty
+  }
+  return {
+    chat_id: row.chatId,
+    session_id: row.sessionId,
+    title: row.title,
+    model: row.model,
+    mode: row.mode,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+    temperature: row.temperature ?? undefined,
+    system_prompt: row.systemPrompt ?? undefined,
+    reasoning_effort: row.reasoningEffort ?? undefined,
+    max_tokens: row.maxTokens ?? undefined,
+    auth_slot: row.authSlot ?? undefined,
+    response_id: row.responseId,
+    store: row.store,
+    resumable: row.resumable,
+    messages
+  };
+}
+
+function chatToRowValues(record: ChatRecord) {
+  return {
+    chatId: record.chat_id,
+    sessionId: record.session_id,
+    title: record.title,
+    model: record.model,
+    mode: record.mode,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    temperature: record.temperature ?? null,
+    systemPrompt: record.system_prompt ?? null,
+    reasoningEffort: record.reasoning_effort ?? null,
+    maxTokens: record.max_tokens ?? null,
+    authSlot: record.auth_slot ?? null,
+    responseId: record.response_id ?? null,
+    store: Boolean(record.store),
+    resumable: Boolean(record.resumable),
+    messagesJson: JSON.stringify(record.messages)
+  };
 }
 
 export async function getChat(chatId: string): Promise<ChatRecord | null> {
-  try {
-    const raw = await fs.readFile(chatFile(chatId), "utf-8");
-    return JSON.parse(raw) as ChatRecord;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
+  const db = getDb();
+  const rows = await db.select().from(chats).where(eq(chats.chatId, chatId)).limit(1);
+  if (rows.length === 0) return null;
+  return rowToChat(rows[0] as ChatDbRow);
 }
 
 export async function saveChat(record: ChatRecord): Promise<ChatRecord> {
-  await writeChat(record);
+  const db = getDb();
+  const values = chatToRowValues(record);
+  await db
+    .insert(chats)
+    .values(values)
+    .onConflictDoUpdate({ target: chats.chatId, set: values });
   return record;
 }
 
-export async function upsertChat(input: Partial<ChatRecord> & { chat_id: string; session_id: string; model: string; mode: string; messages: ChatMessage[] }): Promise<ChatRecord> {
+export async function upsertChat(
+  input: Partial<ChatRecord> & { chat_id: string; session_id: string; model: string; mode: string; messages: ChatMessage[] }
+): Promise<ChatRecord> {
   const existing = await getChat(input.chat_id);
   const now = Math.floor(Date.now() / 1000);
   const record: ChatRecord = {
@@ -98,76 +162,59 @@ export async function upsertChat(input: Partial<ChatRecord> & { chat_id: string;
     response_id: input.response_id ?? null,
     store: Boolean(input.store),
     resumable: Boolean(input.resumable),
-    messages: input.messages.map((message) => ({
-      ...message,
-      ts: message.ts || now
-    }))
+    messages: input.messages.map((m) => ({ ...m, ts: m.ts || now }))
   };
-  await writeChat(record);
-  return record;
+  return saveChat(record);
 }
 
-export async function listChats(): Promise<ChatRecord[]> {
-  try {
-    const entries = await fs.readdir(config.chatsDir, { withFileTypes: true });
-    const chats = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map(async (entry) => {
-          const raw = await fs.readFile(path.join(config.chatsDir, entry.name), "utf-8");
-          return JSON.parse(raw) as ChatRecord;
-        })
-    );
-    return chats.sort((a, b) => b.updated_at - a.updated_at);
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
+export async function listChats(options: ListChatsOptions = {}): Promise<ChatRecord[]> {
+  const db = getDb();
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const offset = Math.max(options.offset ?? 0, 0);
+
+  const query = options.sessionId
+    ? db.select().from(chats).where(eq(chats.sessionId, options.sessionId))
+    : db.select().from(chats);
+
+  const rows = await query.orderBy(desc(chats.updatedAt)).limit(limit).offset(offset);
+  return rows.map((r) => rowToChat(r as ChatDbRow));
 }
 
-export async function searchChats(query: string): Promise<ChatRecord[]> {
-  const normalized = String(query || "").trim().toLowerCase();
-  if (!normalized) {
-    return listChats();
-  }
-  const chats = await listChats();
-  return chats.filter((chat) => {
-    if (chat.title.toLowerCase().includes(normalized)) {
-      return true;
-    }
-    return chat.messages.some((message) => String(message.content || "").toLowerCase().includes(normalized));
-  });
+export async function searchChats(query: string, options: ListChatsOptions = {}): Promise<ChatRecord[]> {
+  const normalized = String(query || "").trim();
+  if (!normalized) return listChats(options);
+
+  const db = getDb();
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const like1 = `%${normalized.toLowerCase()}%`;
+
+  const rows = await db
+    .select()
+    .from(chats)
+    .where(or(like(chats.title, like1), like(chats.messagesJson, like1)))
+    .orderBy(desc(chats.updatedAt))
+    .limit(limit)
+    .offset(offset);
+
+  return rows.map((r) => rowToChat(r as ChatDbRow));
 }
 
 export async function deleteChat(chatId: string): Promise<boolean> {
-  try {
-    await fs.unlink(chatFile(chatId));
-    return true;
-  } catch (error: any) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
+  const db = getDb();
+  const result = await db.delete(chats).where(eq(chats.chatId, chatId)).returning();
+  return result.length > 0;
 }
 
 export async function clearThreadBySessionId(sessionId: string): Promise<number> {
-  const chats = await listChats();
-  let updated = 0;
-  for (const chat of chats) {
-    if (chat.session_id !== sessionId) {
-      continue;
-    }
-    chat.response_id = null;
-    chat.store = false;
-    chat.resumable = false;
-    chat.updated_at = Math.floor(Date.now() / 1000);
-    await writeChat(chat);
-    updated += 1;
-  }
-  return updated;
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const result = await db
+    .update(chats)
+    .set({ responseId: null, store: false, resumable: false, updatedAt: now })
+    .where(and(eq(chats.sessionId, sessionId)))
+    .returning();
+  return result.length;
 }
 
 export function summarizeChat(chat: ChatRecord) {
