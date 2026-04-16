@@ -3,6 +3,7 @@ import { config } from "./config/env";
 import { handleHistoryClear, handleHistoryGet } from "./history";
 import { createSession, getSession, type Message, updateSession } from "./history/store";
 import { logger } from "./logger";
+import { incrementRpcError, incrementRpcRequest } from "./metrics";
 import { runToolLoop } from "./tools-loop/engine";
 import { getToolByName, listTools } from "./tools/registry";
 
@@ -42,6 +43,8 @@ export async function rpcHandler(
   }
 
   const { id, method, params = {} } = requestBody;
+
+  incrementRpcRequest();
 
   try {
     switch (method) {
@@ -136,6 +139,7 @@ export async function rpcHandler(
       }
     }
   } catch (error: any) {
+    incrementRpcError();
     logger.error({ err: error, rpcId: id, method }, "RPC handler error");
     return {
       jsonrpc: "2.0",

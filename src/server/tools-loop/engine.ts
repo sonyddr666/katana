@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { buildPayload, collectCodexResponse } from "../codex/client";
 import { config } from "../config/env";
 import type { Message } from "../history/store";
+import { incrementCodexCall, incrementToolLoopIteration, recordToolCall } from "../metrics";
 import { sendEvent, streamToolProgress } from "../sse";
 import { getToolByName, listTools, toolRegistry } from "../tools/registry";
 import type { Envelope, ToolSchema, ToolSchemaProperty } from "../tools/types";
@@ -185,6 +186,7 @@ export async function runToolLoop(
   });
 
   while (loop < max) {
+    incrementToolLoopIteration();
     const instructions = [systemPrompt || "You are a helpful assistant.", availableTools.length ? buildToolsSystemPrompt(availableTools) : ""]
       .filter(Boolean)
       .join("\n\n");
@@ -197,14 +199,21 @@ export async function runToolLoop(
       previousResponseId: null
     });
 
-    const assistantTurn = await collectCodexResponse(payload, {
-      onDelta(delta) {
-        sendEvent(sessionId, "assistant_delta", { delta, round: loop });
-      },
-      onEvent(eventType, payloadChunk) {
-        sendEvent(sessionId, "codex_event", { type: eventType, payload: payloadChunk, round: loop });
-      }
-    });
+    let assistantTurn;
+    try {
+      assistantTurn = await collectCodexResponse(payload, {
+        onDelta(delta) {
+          sendEvent(sessionId, "assistant_delta", { delta, round: loop });
+        },
+        onEvent(eventType, payloadChunk) {
+          sendEvent(sessionId, "codex_event", { type: eventType, payload: payloadChunk, round: loop });
+        }
+      });
+      incrementCodexCall(true);
+    } catch (err) {
+      incrementCodexCall(false);
+      throw err;
+    }
 
     totalLatencyMs += assistantTurn.latencyMs;
     if (assistantTurn.responseId) {
@@ -271,6 +280,8 @@ export async function runToolLoop(
       const latency = Date.now() - started;
       const toolOutput = toolResultToText(envelope);
 
+      recordToolCall(toolName, latency, envelope.ok, readEnvelopeError(envelope));
+
       attempts.push({
         action: toolName,
         result: envelope.ok ? "ok" : "error",
@@ -300,6 +311,8 @@ export async function runToolLoop(
         scope: tool.scope,
         data: { error: error.message || String(error) }
       };
+
+      recordToolCall(toolName, latency, false, error.message || String(error));
 
       attempts.push({
         action: toolName,

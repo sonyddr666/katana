@@ -15,6 +15,7 @@ import { authMiddleware } from "./middlewares/auth";
 import { loggerMiddleware } from "./middlewares/logger";
 import { setupToolLoopRoutes } from "./tools-loop/routes";
 import { logger } from "./logger";
+import { snapshot as metricsSnapshot } from "./metrics";
 
 const app = express();
 const server = http.createServer(app);
@@ -40,7 +41,7 @@ const apiLimiter = rateLimit({
   max: config.rateLimitMax,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  skip: (req) => req.path === "/health" || req.path.startsWith("/stream")
+  skip: (req) => req.path === "/health" || req.path === "/metrics" || req.path.startsWith("/stream")
 });
 app.use(apiLimiter);
 
@@ -74,6 +75,10 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.get("/metrics", (_req, res) => {
+  res.json(metricsSnapshot());
 });
 
 const PORT = config.port || 8080;
