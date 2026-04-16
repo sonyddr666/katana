@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 
 import { loadAuth, refreshAuth, extractAccessToken, extractExpiresSeconds, hasUsableAuth } from "../codex/auth-manager";
+import { logger } from "../logger";
 
 function isPublicRequest(req: Request): boolean {
   if (req.path === "/health") {
@@ -37,7 +38,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       try {
         auth = await refreshAuth(auth!);
       } catch (error) {
-        console.warn("Failed to refresh auth token:", error);
+        logger.warn({ err: error }, "Failed to refresh auth token");
       }
     }
 
@@ -49,7 +50,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   if (process.env.NODE_ENV !== "production") {
-    console.warn(`Allowing unauthenticated request to ${req.path} in non-production mode.`);
+    logger.warn({ path: req.path }, "Allowing unauthenticated request in non-production mode");
     next();
     return;
   }

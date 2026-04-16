@@ -2,6 +2,7 @@ import { CODEX_MODELS } from "./codex/client";
 import { config } from "./config/env";
 import { handleHistoryClear, handleHistoryGet } from "./history";
 import { createSession, getSession, type Message, updateSession } from "./history/store";
+import { logger } from "./logger";
 import { runToolLoop } from "./tools-loop/engine";
 import { getToolByName, listTools } from "./tools/registry";
 
@@ -135,7 +136,7 @@ export async function rpcHandler(
       }
     }
   } catch (error: any) {
-    console.error("RPC handler error:", error);
+    logger.error({ err: error, rpcId: id, method }, "RPC handler error");
     return {
       jsonrpc: "2.0",
       id,
